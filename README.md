@@ -2,25 +2,11 @@
 
 A Claude Code mod that shows the current project's past sessions in a side pane. Select a session to see what it was about: its title, the task you started it with, your last request, when it ran, how many prompts it has, and its git branch. From there you can **resume** it as the main session, **pin** it so it always sits on top, or **archive** it so it stops showing.
 
-```text
-Past sessions · 12                    refresh
-Pinned
-  Login bug fix on Windows                 2d
-Recent
-> Pull button feature                      3h
-    Task
-    add a pull button as well so we can pull from remote
-    Last request
-    bump to 0.3.0 and commit
-    Started Oct 5 2026, 21:10
-    Last active Oct 5 2026, 23:37
-    3 prompts · branch main · 538 KB
-    3a07c375-ab56-4dfa-a20a-cd4ed30064a0
-    [ r: Resume ] [ p: Pin ] [ a: Archive ] [ c: Copy ]
-  Branch search and checkout autocomplete  9d
-  ...
-More… (7)   Archived (2)
-```
+<p align="center">
+  <img src="docs/pane.png" alt="The Sessions pane: a pinned session on top, recent sessions below it with their ages, one selected session expanded to show its task, last request, dates, prompt count, branch and Resume, Pin, Archive and Copy buttons, and More and Archived buttons at the bottom" width="492">
+</p>
+
+<p align="center"><sub>The pane with sample sessions: one pinned, one selected, the list collapsed to the newest five.</sub></p>
 
 ## Ordering and collapsing
 

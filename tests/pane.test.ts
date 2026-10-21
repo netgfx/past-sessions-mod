@@ -107,6 +107,8 @@ for (const os of ['windows', 'posix'] as const) {
       expect(await ui.find({ type: 'Button', text: /Task 6$/ })).toBeUndefined()
       expect(await ui.find({ type: 'Button', text: /Current/ })).toBeUndefined()
       expect(await ui.find({ type: 'Button', key: 'more', text: 'More… (3)' })).toBeDefined()
+      // the three hidden ones are unread, yet nothing on screen is loading
+      expect(await ui.find({ type: 'Button', key: 'refresh', text: 'refresh' })).toBeDefined()
 
       await ui.press({ key: 'more' })
       await settle(clock)

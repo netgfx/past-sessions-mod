@@ -1,7 +1,7 @@
 // past-sessions: draws the pane from a plain model; every press goes back
 // through `act`, so this file never touches $
 
-import { archivedSessions, COLLAPSED_COUNT, firstLine, fit, formatSize, longDate, shortAge, visibleSessions } from './lib.js'
+import { archivedSessions, COLLAPSED_COUNT, fit, formatSize, longDate, shortAge, visibleSessions } from './lib.js'
 
 const AGE_COLUMNS = 6
 
@@ -17,7 +17,9 @@ export function renderPane(E, m, act) {
     count: COLLAPSED_COUNT,
   })
   const archivedList = archivedSessions(m.sessions, m.archived)
-  const pending = m.sessions.filter((s) => !s.summary).length
+  // Only the rows on screen count: collapsed, the hidden ones are never read
+  const onScreen = [...list.pinned, ...list.others, ...(m.showArchived ? archivedList : [])]
+  const pending = onScreen.filter((s) => !s.summary).length
 
   children.push(
     Box({
@@ -123,7 +125,8 @@ function details(E, m, act, s, width) {
   if (!sum) {
     lines.push(Text({ dimColor: true, children: ['Reading the transcript…'] }))
   } else {
-    if (sum.title && sum.title !== firstLine(sum.firstPrompt)) {
+    // The whole title, when the row above had to cut it
+    if (sum.title && sum.title.length > width - AGE_COLUMNS - 5) {
       lines.push(Text({ bold: true, wrap: 'wrap', children: [sum.title] }))
     }
     lines.push(Text({ dimColor: true, children: ['Task'] }))
