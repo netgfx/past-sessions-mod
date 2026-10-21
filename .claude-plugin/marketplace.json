@@ -3,19 +3,19 @@
   "owner": { "name": "netgfx", "email": "djmid71@gmail.com" },
   "metadata": {
     "description": "Marketplace for the past-sessions Claude Code mod",
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
   "plugins": [
     {
       "name": "past-sessions",
       "source": "./",
-      "description": "A side pane listing this project's past sessions: read what each was about, resume it, pin it to the top, or archive it out of sight",
-      "version": "0.1.0",
+      "description": "A side pane listing this project's past sessions: search them, read what each was about, resume it, pin it to the top, or archive it out of sight",
+      "version": "0.2.0",
       "author": { "name": "Michael Dobekidis", "email": "djmid71@gmail.com" },
       "homepage": "https://github.com/netgfx/past-sessions-mod",
       "repository": "https://github.com/netgfx/past-sessions-mod",
       "license": "MIT",
-      "keywords": ["mod", "sessions", "resume", "history", "pane"],
+      "keywords": ["mod", "sessions", "resume", "history", "search", "pane"],
       "category": "productivity"
     }
   ]

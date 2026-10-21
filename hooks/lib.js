@@ -133,23 +133,40 @@ export function orderSessions(sessions, pins) {
   })
 }
 
+// The words of a search, lower case; empty when there is none
+export function queryTerms(query) {
+  return String(query ?? '').toLowerCase().split(/\s+/).filter(Boolean)
+}
+
+// Whether a read session holds every term somewhere in its title, prompts or
+// branch, or as the start of its id. An unread one matches nothing yet.
+export function matchesQuery(s, terms) {
+  if (!terms.length) return true
+  const sum = s.summary
+  if (!sum) return false
+  const hay = [sum.title, sum.firstPrompt, sum.lastPrompt, sum.branch].join(' ').toLowerCase()
+  return terms.every((t) => hay.includes(t) || s.id.toLowerCase().startsWith(t))
+}
+
 // What the list draws: archived and empty sessions left out, then, collapsed,
 // every pinned one plus the newest `count` others. `hidden` is how many More
-// would add.
-export function visibleSessions(sessions, { pins, archived, expanded, count = COLLAPSED_COUNT }) {
+// would add. A search shows every match, never collapsed.
+export function visibleSessions(sessions, { pins, archived, expanded, count = COLLAPSED_COUNT, query = '' }) {
+  const terms = queryTerms(query)
   const live = orderSessions(
-    sessions.filter((s) => !archived.has(s.id) && !s.summary?.isEmpty),
+    sessions.filter((s) => !archived.has(s.id) && !s.summary?.isEmpty && matchesQuery(s, terms)),
     pins,
   )
   const pinned = live.filter((s) => pins.has(s.id))
   const others = live.filter((s) => !pins.has(s.id))
-  const shown = expanded ? others : others.slice(0, count)
+  const shown = expanded || terms.length ? others : others.slice(0, count)
   return { pinned, others: shown, hidden: others.length - shown.length, total: live.length }
 }
 
-export function archivedSessions(sessions, archived) {
+export function archivedSessions(sessions, archived, query = '') {
+  const terms = queryTerms(query)
   return orderSessions(
-    sessions.filter((s) => archived.has(s.id) && !s.summary?.isEmpty),
+    sessions.filter((s) => archived.has(s.id) && !s.summary?.isEmpty && matchesQuery(s, terms)),
     new Set(),
   )
 }
@@ -169,12 +186,21 @@ export function shortAge(ms, now) {
   return MONTHS[d.getMonth()] + ' ' + d.getDate() + year
 }
 
-// "Oct 4, 14:02"
-export function longDate(ms) {
+// "Oct 4 2025, 14:02", or "Oct 4, 14:02" when `now` falls in the same year
+export function longDate(ms, now) {
   if (!ms) return 'unknown'
   const d = new Date(ms)
   const pad = (n) => String(n).padStart(2, '0')
-  return MONTHS[d.getMonth()] + ' ' + d.getDate() + ' ' + d.getFullYear() + ', ' + pad(d.getHours()) + ':' + pad(d.getMinutes())
+  const year = now && new Date(now).getFullYear() === d.getFullYear() ? '' : ' ' + d.getFullYear()
+  return MONTHS[d.getMonth()] + ' ' + d.getDate() + year + ', ' + pad(d.getHours()) + ':' + pad(d.getMinutes())
+}
+
+// "active now", "last active 3h ago", "last active Oct 4"
+export function lastActive(ms, now) {
+  const age = shortAge(ms, now)
+  if (!age) return ''
+  if (age === 'now') return 'active now'
+  return 'last active ' + age + (/^\d/.test(age) ? ' ago' : '')
 }
 
 export function formatSize(bytes) {

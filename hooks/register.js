@@ -1,7 +1,7 @@
 // past-sessions: a side pane listing this project's past sessions. Select one
 // to read what it was about, then resume it, pin it on top, or archive it.
 
-import { COLLAPSED_COUNT, isWindowsPath, joinPath, projectDirName, psQuote, sessionIdOf, summarize, visibleSessions } from './lib.js'
+import { archivedSessions, COLLAPSED_COUNT, isWindowsPath, joinPath, projectDirName, psQuote, queryTerms, sessionIdOf, summarize, visibleSessions } from './lib.js'
 import { renderPane } from './view.js'
 
 const PANE = 'past-sessions'
@@ -21,7 +21,8 @@ let currentId = null
 let sessions = new Map()
 let pins = new Set()
 let archived = new Set()
-let ui = { expanded: false, showArchived: false, selected: null, status: '', problem: '' }
+// `query` is the search text; `searching` keeps its field up while empty
+let ui = { expanded: false, showArchived: false, selected: null, status: '', statusIsError: false, problem: '', query: '', searching: false }
 let paneOpen = false
 let scanning = false
 let pumping = false
@@ -56,8 +57,8 @@ export function register(on, opts) {
     try {
       await $.command.register({
         name: 'past-sessions',
-        description: 'Toggle the past sessions pane (open | close | refresh)',
-        argumentHint: '[open|close|refresh]',
+        description: 'Toggle the past sessions pane (open | close | refresh | search <text>)',
+        argumentHint: '[open|close|refresh|search <text>]',
         immediate: true,
       })
     } catch (err) {
@@ -69,14 +70,24 @@ export function register(on, opts) {
   // /clear, /resume and /branch switch the session: the old one joins the list
   on('classic.SessionStart', { source: ['clear', 'resume', 'fork'] }, async ($, e, next) => {
     currentId = e.session_id ?? (await $.session.id().catch(() => currentId))
-    ui = { ...ui, selected: null, status: '' }
+    ui = { ...ui, selected: null, status: '', statusIsError: false }
     if (paneOpen) void refresh($)
     return next(e)
   })
 
   on('command.run', { command: 'past-sessions' }, async ($, e) => {
-    const arg = String(e.args ?? '').trim().toLowerCase()
+    const raw = String(e.args ?? '').trim()
+    const arg = raw.toLowerCase()
     const isUp = (await $.ui.panes()).some((p) => p.id === PANE)
+    if (arg === 'search' || arg.startsWith('search ')) {
+      const query = raw.slice('search'.length).trim()
+      ui = { ...ui, query, searching: true, selected: null }
+      if (!isUp) await openPane($, true)
+      else $.ui.invalidate('ui.render')
+      pump($)
+      void $.ui.focus({ requestId: PANE, key: 'search' }).catch(() => {})
+      return {}
+    }
     if (arg === 'refresh') {
       await refresh($)
       if (!isUp) await openPane($, true)
@@ -124,8 +135,12 @@ export function register(on, opts) {
         showArchived: ui.showArchived,
         selected: ui.selected,
         status: ui.status,
+        statusIsError: ui.statusIsError,
         problem: ui.problem,
         scanning,
+        isFocused: e.props.isFocused === true,
+        query: ui.query,
+        searching: ui.searching,
       },
       {
         refresh: () => refresh($),
@@ -142,10 +157,34 @@ export function register(on, opts) {
           pump($)
         },
         select: (id) => {
-          ui = { ...ui, selected: ui.selected === id ? null : id, status: '' }
+          ui = { ...ui, selected: ui.selected === id ? null : id, status: '', statusIsError: false }
           if (ui.selected && !sessions.get(id)?.summary) priority = [id, ...priority]
           redraw()
           pump($)
+        },
+        openSearch: async () => {
+          ui = { ...ui, searching: true }
+          redraw()
+          await $.ui.focus({ requestId: PANE, key: 'search' }).catch(() => {})
+        },
+        search: (value) => {
+          ui = { ...ui, query: value }
+          ui.selected = keepSelected(ui.selected)
+          redraw()
+          pump($)
+        },
+        // Enter opens the top match, with the focus on its Resume
+        submitSearch: async (value) => {
+          ui = { ...ui, query: value }
+          const top = shownSessions()[0]
+          ui.selected = top ? top.id : keepSelected(ui.selected)
+          redraw()
+          if (top) await $.ui.focus({ requestId: PANE, key: 'resume' }).catch(() => {})
+        },
+        clearSearch: async () => {
+          ui = { ...ui, query: '', searching: false }
+          redraw()
+          await $.ui.focus({ requestId: PANE, key: 'search-open' }).catch(() => {})
         },
         resume: (id) => resume($, id),
         pin: (id) => togglePin($, id),
@@ -249,11 +288,18 @@ async function loadMarks($) {
   archived = new Set(keys.filter((k) => k.startsWith('archive:')).map((k) => k.slice(8)))
 }
 
-// A selection the collapsed list no longer shows is dropped
+// The rows the list draws now, top to bottom
+function shownSessions() {
+  const all = [...sessions.values()]
+  const list = visibleSessions(all, { pins, archived, expanded: ui.expanded, query: ui.query })
+  const isSearch = queryTerms(ui.query).length > 0
+  return [...list.pinned, ...list.others, ...(isSearch || ui.showArchived ? archivedSessions(all, archived, ui.query) : [])]
+}
+
+// A selection the list no longer shows is dropped
 function keepSelected(id) {
   if (!id) return null
-  const shown = visibleSessions([...sessions.values()], { pins, archived, expanded: false })
-  return [...shown.pinned, ...shown.others].some((s) => s.id === id) ? id : null
+  return shownSessions().some((s) => s.id === id) ? id : null
 }
 
 // The next transcript to read: the selected one, then pinned ones, then the
@@ -266,6 +312,8 @@ function nextToRead() {
   priority = []
   const all = [...sessions.values()]
   const order = [...all].sort((a, b) => (pins.has(b.id) ? 1 : 0) - (pins.has(a.id) ? 1 : 0) || b.mtimeMs - a.mtimeMs)
+  // A search needs every transcript, archived ones too
+  if (queryTerms(ui.query).length) return order.find((s) => !s.summary) ?? null
   let shown = 0
   for (const s of order) {
     const isPinned = pins.has(s.id)
@@ -398,11 +446,11 @@ async function toggleArchive($, id) {
 // Runs /resume <id>, as typing it would; where that is refused, copies the
 // command that resumes it from a terminal
 async function resume($, id) {
-  ui = { ...ui, status: 'Resuming…' }
+  ui = { ...ui, status: 'Resuming…', statusIsError: false }
   $.ui.invalidate('ui.render')
   try {
     await $.command.run({ command: 'resume', args: id })
-    ui = { ...ui, status: '' }
+    ui = { ...ui, status: '', statusIsError: false }
   } catch (err) {
     let copied = false
     try {
@@ -413,6 +461,7 @@ async function resume($, id) {
     }
     ui = {
       ...ui,
+      statusIsError: true,
       status: 'Could not resume here (' + err.message + '). ' + (copied ? 'Copied ' : 'Run ') + 'claude --resume ' + id,
     }
   }

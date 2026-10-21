@@ -2,6 +2,10 @@ import { describe, expect, test } from 'claude-code/testing'
 import {
   fit,
   joinPath,
+  lastActive,
+  longDate,
+  matchesQuery,
+  queryTerms,
   orderSessions,
   projectDirName,
   promptOf,
@@ -105,4 +109,22 @@ test('ages and fitting', async () => {
   expect(shortAge(now - 3 * 3600_000, now)).toBe('3h')
   expect(shortAge(Date.parse('2025-03-01T12:00:00Z'), now)).toBe('Mar 1 2025')
   expect(fit('abcdef', 4)).toBe('abc…')
+  expect(lastActive(now - 30_000, now)).toBe('active now')
+  expect(lastActive(now - 3 * 3600_000, now)).toBe('last active 3h ago')
+  expect(lastActive(Date.parse('2025-03-01T12:00:00Z'), now)).toBe('last active Mar 1 2025')
+  expect(longDate(Date.parse('2026-03-01T12:00:00Z'), now)).toMatch(/^Mar 1, \d\d:\d\d$/)
+  expect(longDate(Date.parse('2025-03-01T12:00:00Z'), now)).toMatch(/^Mar 1 2025, \d\d:\d\d$/)
+})
+
+test('search terms all have to match, in any field', async () => {
+  const s = { id: 'abc-123', summary: { title: 'Dark mode', firstPrompt: 'add a toggle', lastPrompt: 'ship it', branch: 'feat/theme' } }
+  expect(queryTerms('  Dark   TOGGLE ')).toEqual(['dark', 'toggle'])
+  expect(matchesQuery(s, queryTerms('dark toggle'))).toBe(true)
+  expect(matchesQuery(s, queryTerms('theme'))).toBe(true)
+  expect(matchesQuery(s, queryTerms('abc'))).toBe(true)
+  // an id matches from its start only
+  expect(matchesQuery(s, queryTerms('123'))).toBe(false)
+  expect(matchesQuery(s, queryTerms('dark light'))).toBe(false)
+  expect(matchesQuery({ id: 'x', summary: null }, queryTerms('x'))).toBe(false)
+  expect(matchesQuery({ id: 'x', summary: null }, [])).toBe(true)
 })

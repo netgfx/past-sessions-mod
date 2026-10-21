@@ -1,12 +1,12 @@
 {
   "name": "past-sessions",
-  "version": "0.1.0",
-  "description": "A side pane listing this project's past Claude Code sessions: read what each one was about, resume it, pin it to the top, or archive it out of sight",
+  "version": "0.2.0",
+  "description": "A side pane listing this project's past Claude Code sessions: search them, read what each one was about, resume it, pin it to the top, or archive it out of sight",
   "author": { "name": "Michael Dobekidis", "email": "djmid71@gmail.com" },
   "homepage": "https://github.com/netgfx/past-sessions-mod",
   "repository": "https://github.com/netgfx/past-sessions-mod",
   "license": "MIT",
-  "keywords": ["mod", "sessions", "resume", "history", "pane"],
+  "keywords": ["mod", "sessions", "resume", "history", "search", "pane"],
   "userConfig": {
     "auto_open": {
       "type": "boolean",

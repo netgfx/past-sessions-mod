@@ -73,6 +73,7 @@ function stubAll(on: any, os: 'windows' | 'posix', seen: { commands: any[]; read
   on('ui.toast', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
   on('ui.copy', () => ({ value: { isCopied: true } }))
+  on('ui.focus', () => ({ value: {} }))
   on('command.register', () => ({ value: undefined }))
   on('command.run', ($: any, e: any) => {
     seen.commands.push({ command: e.command, args: e.args })
@@ -173,5 +174,78 @@ test('pins and archives survive a reload through $.store', async ($, on) => {
   await ui.press({ key: 'less' })
   expect(await ui.find({ type: 'Button', text: /Task 8$/ })).toBeDefined()
   expect(store.get('pin:' + idOf(8))).toBe(true)
+  await ui.unmount()
+})
+
+test('titles are drawn in Claude orange; the selected one opens into a card', async ($, on) => {
+  const seen = { commands: [] as any[], reads: [] as string[] }
+  const { f, clock } = stubAll(on, 'windows', seen)
+  await start($, clock, f.cwd)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' } as any)
+
+  const title = await ui.find({ type: 'Text', text: /Task 2$/ })
+  expect(title?.props.color).toBe('claude')
+  // focused with nothing open, the pane says how to get around
+  expect(await ui.find({ type: 'Text', text: /Esc back to prompt/ })).toBeDefined()
+
+  await ui.press({ key: 'row-' + idOf(2) })
+  const card = await ui.find({ key: 'card-' + idOf(2) })
+  expect(card?.props.borderStyle).toBe('round')
+  expect(await ui.find({ type: 'Text', text: /^Started Oct 20, \d\d:\d\d · last active 2h ago$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Esc back to prompt/ })).toBeUndefined()
+  // the other rows stay outside it
+  expect(await ui.find({ key: 'card-' + idOf(1) })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('search reads every transcript, shows each match, Enter opens the top one', async ($, on) => {
+  const seen = { commands: [] as any[], reads: [] as string[] }
+  const { f, clock } = stubAll(on, 'posix', seen)
+  await start($, clock, f.cwd)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' } as any)
+
+  // archive 3 first: a search still finds it
+  await ui.press({ key: 'row-' + idOf(3) })
+  await ui.press({ key: 'archive' })
+
+  await ui.press({ key: 'search-open' })
+  expect(await ui.find({ type: 'Input', key: 'search' })).toBeDefined()
+  await ui.input({ key: 'search', text: 'task 7', kind: 'change' })
+  await settle(clock)
+  // 6..8 were never read collapsed; the search reads them
+  expect(seen.reads.some((p) => p.includes(idOf(7)))).toBe(true)
+  expect(await ui.find({ type: 'Button', text: /Task 7$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /Task 1$/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /· 1 match$/ })).toBeDefined()
+
+  await ui.input({ key: 'search', text: 'do task 3', kind: 'change' })
+  expect(await ui.find({ type: 'Text', text: 'Archived' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /Task 3$/ })).toBeDefined()
+
+  await ui.input({ key: 'search', text: 'nothing like it', kind: 'change' })
+  expect(await ui.find({ type: 'Text', text: /No sessions match "nothing like it"/ })).toBeDefined()
+
+  await ui.input({ key: 'search', text: 'task 8' })
+  expect(await ui.find({ key: 'card-' + idOf(8) })).toBeDefined()
+  await ui.press({ key: 'resume' })
+  expect(seen.commands.at(-1)).toEqual({ command: 'resume', args: idOf(8) })
+
+  await ui.press({ key: 'search-clear' })
+  expect(await ui.find({ type: 'Input', key: 'search' })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', text: /Task 1$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'more' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('/past-sessions search <text> opens the pane already searching', async ($, on) => {
+  const seen = { commands: [] as any[], reads: [] as string[] }
+  const { f, clock } = stubAll(on, 'windows', seen)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: f.cwd })
+  await $.command.run({ command: 'past-sessions', args: 'search Task 6' })
+  await settle(clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' } as any)
+  expect((await ui.find({ type: 'Input', key: 'search' }))?.props.value).toBe('Task 6')
+  expect(await ui.find({ type: 'Button', text: /Task 6$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /Task 5$/ })).toBeUndefined()
   await ui.unmount()
 })
