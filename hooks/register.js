@@ -1,23 +1,25 @@
 // past-sessions: a side pane listing this project's past sessions. Select one
 // to read what it was about, then resume it, pin it on top, or archive it.
 
-import { archivedSessions, COLLAPSED_COUNT, isWindowsPath, joinPath, projectDirName, psQuote, queryTerms, sessionIdOf, summarize, visibleSessions } from './lib.js'
+import { archivedSessions, COLLAPSED_COUNT, headTailText, joinPath, projectDirName, queryTerms, sessionIdOf, summarize, visibleSessions } from './lib.js'
 import { renderPane } from './view.js'
 
 const PANE = 'past-sessions'
 const TITLE = 'Sessions'
-// $.fs.read refuses files over 4 MiB; bigger transcripts are read head and tail
+// $.fs.read refuses files over 4 MiB in one read; bigger transcripts are read as their
+// first and last PART_BYTES, with $.fs.read's offset and length (Claude Code v2.1.326+)
 const READ_LIMIT = 4 * 1024 * 1024 - 1024
-const HEAD_TAIL_LINES = 150
-// Bumped when summarize() changes, so cached summaries are read again
-const SUMMARY_VERSION = 2
+const PART_BYTES = 1024 * 1024
 const RESCAN_MS = 60_000
+// The name before 0.3.0: its pins and archive marks are copied over once
+const OLD_PLUGIN = 'past-sessions'
 
 let options = {}
 // The folder holding this project's transcripts, once found
 let projectDir = null
 let currentId = null
-// id -> { id, path, mtimeMs, size, summary? }
+// id -> { id, path, mtimeMs, size, summary? }. Summaries (titles and prompt excerpts)
+// live only here, in memory, for this session: nothing read from a transcript is stored.
 let sessions = new Map()
 let pins = new Set()
 let archived = new Set()
@@ -44,6 +46,8 @@ export function register(on, opts) {
     } catch {
       currentId = null
     }
+    await migrateStore($)
+    await dropOldSummaries($)
     paneOpen = (await $.ui.panes()).some((p) => p.id === PANE)
     if (paneOpen) void refresh($)
     wantsAutoOpen = options.auto_open !== false && !paneOpen
@@ -73,7 +77,7 @@ export function register(on, opts) {
     ui = { ...ui, selected: null, status: '', statusIsError: false }
     if (paneOpen) void refresh($)
     return next(e)
-  })
+  }).catch(failOpen)
 
   on('command.run', { command: 'past-sessions' }, async ($, e) => {
     const raw = String(e.args ?? '').trim()
@@ -105,7 +109,7 @@ export function register(on, opts) {
   on('ui.close', async ($, e, next) => {
     if (e.id === PANE) paneOpen = false
     return next(e)
-  })
+  }).catch(failOpen)
 
   // Opens the pane unasked only once a drawing says it would dock beside the
   // transcript; above the prompt it would push the conversation up
@@ -346,29 +350,26 @@ function pump($) {
   })
 }
 
+// Reads one transcript and summarizes it. The summary is kept in memory only (in
+// `sessions`), and read again from the transcript in a later session: no title, prompt
+// or other text from a transcript is written anywhere.
 async function summaryOf($, s) {
-  const key = 'summary:' + s.id
-  const cached = await $.store.get(key)
-  if (cached && cached.v === SUMMARY_VERSION && cached.mtimeMs === s.mtimeMs && cached.size === s.size) return cached
   let text = null
   let isPartial = false
   try {
     if (s.size <= READ_LIMIT) text = await $.fs.read(s.path)
     else {
-      text = await readHeadTail($, s.path)
+      text = await readHeadTail($, s)
       isPartial = true
     }
   } catch (err) {
     $.ui.log('past-sessions: could not read ' + s.path + ': ' + err.message, { to: 'debug' })
   }
   if (text === null) {
-    return { v: SUMMARY_VERSION, mtimeMs: s.mtimeMs, size: s.size, title: '(could not read)', firstPrompt: '', lastPrompt: '', prompts: 0, startedAt: 0, isEmpty: false, isPartial }
+    return { title: isPartial ? '(large session: could not read)' : '(could not read)', firstPrompt: '', lastPrompt: '', prompts: 0, startedAt: 0, isEmpty: false, isPartial }
   }
   const sum = summarize(text)
-  const out = {
-    v: SUMMARY_VERSION,
-    mtimeMs: s.mtimeMs,
-    size: s.size,
+  return {
     title: sum.title,
     firstPrompt: sum.firstPrompt,
     lastPrompt: sum.lastPrompt,
@@ -378,37 +379,73 @@ async function summaryOf($, s) {
     isEmpty: sum.substantive === 0,
     isPartial,
   }
-  try {
-    await $.store.set(key, out)
-  } catch {
-    // store full: the summary is still kept for this session
-  }
-  return out
 }
 
-// The first and last lines of a transcript too big for $.fs.read
-async function readHeadTail($, path) {
-  const argv = isWindowsPath(path)
-    ? [
-        'powershell',
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        '[Console]::OutputEncoding=[Text.Encoding]::UTF8; $p=' +
-          psQuote(path) +
-          '; Get-Content -LiteralPath $p -TotalCount ' +
-          HEAD_TAIL_LINES +
-          ' -Encoding UTF8; Get-Content -LiteralPath $p -Tail ' +
-          HEAD_TAIL_LINES +
-          ' -Encoding UTF8',
-      ]
-    : ['/bin/sh', '-c', 'head -n ' + HEAD_TAIL_LINES + ' "$1"; tail -n ' + HEAD_TAIL_LINES + ' "$1"', 'sh', path]
+// The first and last PART_BYTES of a transcript too big for one $.fs.read, read in
+// parts with $.fs.read's offset and length, and cut to whole lines. No program is
+// started. Claude Code before v2.1.326 can't read part of a file: there the read
+// fails and the session shows as "(large session: could not read)".
+async function readHeadTail($, s) {
   try {
-    const r = await $.process.run(argv, { timeoutMs: 30_000 })
-    return r.exitCode === 0 ? r.stdout : null
+    const head = await $.fs.read(s.path, { offset: 0, length: PART_BYTES })
+    const tail = await $.fs.read(s.path, { offset: Math.max(0, s.size - PART_BYTES), length: PART_BYTES })
+    return headTailText(String(head), String(tail))
   } catch (err) {
-    $.ui.log('past-sessions: head/tail read failed: ' + err.message, { to: 'debug' })
+    $.ui.log('past-sessions: could not read the start and end of ' + s.path + ': ' + err.message, { to: 'debug' })
     return null
+  }
+}
+
+// A hook that throws or times out leaves the event to Claude Code: none of this
+// mod's hooks guards anything
+function failOpen($, e, next) {
+  return next(e)
+}
+
+// Versions before 0.3.0 cached each session's title and first and last prompt in
+// $.store under summary:<id>. None is written any more; any left in this plugin's
+// store is deleted.
+async function dropOldSummaries($) {
+  try {
+    for (const k of await $.store.keys()) if (k.startsWith('summary:')) await $.store.delete(k)
+  } catch {
+    // nothing to drop
+  }
+}
+
+// Before 0.3.0 this plugin was named past-sessions, and $.store keeps each plugin's
+// values under its own name. Once, copy the pin and archive marks (pin:<id>,
+// archive:<id>, which hold no text) from files named past-sessions_*.json in Claude
+// Code's plugin store folder. The old summaries are not copied.
+async function migrateStore($) {
+  try {
+    if (await $.store.get('migrated:' + OLD_PLUGIN)) return
+    await $.store.set('migrated:' + OLD_PLUGIN, true)
+    const config = await configDir($)
+    if (!config) return
+    const dir = joinPath(config, 'plugins', 'store')
+    let files = []
+    try {
+      files = await $.fs.list(dir)
+    } catch {
+      return
+    }
+    for (const f of files) {
+      if (f.kind === 'directory' || !f.name.startsWith(OLD_PLUGIN + '_') || !/\.json$/i.test(f.name)) continue
+      let old = null
+      try {
+        old = JSON.parse(String(await $.fs.read(joinPath(dir, f.name))).replace(/^\uFEFF/, ''))
+      } catch {
+        continue
+      }
+      if (!old || typeof old !== 'object') continue
+      for (const [k, v] of Object.entries(old)) {
+        if (!/^(pin|archive):[0-9a-fA-F-]{8,64}$/.test(k) || v !== true) continue
+        await $.store.set(k, true)
+      }
+    }
+  } catch (err) {
+    $.ui.log('past-sessions: could not copy pins from the old name: ' + err.message, { to: 'debug' })
   }
 }
 

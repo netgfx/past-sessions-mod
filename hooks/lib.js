@@ -216,7 +216,13 @@ export function fit(text, width) {
   return t.length > width ? t.slice(0, width - 1) + '…' : t
 }
 
-// A PowerShell single-quoted literal
-export function psQuote(s) {
-  return "'" + String(s).replace(/'/g, "''") + "'"
+// The text summarize() reads from the first and last bytes of a large transcript: each
+// part cut to whole lines (a read can start or end inside a line, or inside a character),
+// so only complete JSON rows remain
+export function headTailText(head, tail) {
+  const h = String(head ?? '')
+  const t = String(tail ?? '')
+  const headLines = h.includes('\n') ? h.slice(0, h.lastIndexOf('\n')) : ''
+  const tailLines = t.includes('\n') ? t.slice(t.indexOf('\n') + 1) : ''
+  return headLines + '\n' + tailLines
 }
