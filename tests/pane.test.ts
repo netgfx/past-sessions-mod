@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 const PANE = {
-  plugin: 'past-sessions',
+  plugin: 'powermods-past-sessions',
   component: 'Pane',
   requestId: 'past-sessions',
   viewport: { columns: 160, rows: 50 },

@@ -1,22 +1,26 @@
 {
   "name": "past-sessions-mod",
-  "owner": { "name": "netgfx", "email": "djmid71@gmail.com" },
+  "owner": { "name": "Michael Dobekidis", "email": "djmid71@gmail.com", "url": "https://github.com/netgfx" },
   "metadata": {
-    "description": "Marketplace for the past-sessions Claude Code mod",
-    "version": "0.2.0"
+    "description": "Marketplace for the Past Sessions (powermods-past-sessions) Claude Code mod",
+    "version": "0.3.0"
   },
   "plugins": [
     {
-      "name": "past-sessions",
+      "name": "powermods-past-sessions",
       "source": "./",
-      "description": "A side pane listing this project's past sessions: search them, read what each was about, resume it, pin it to the top, or archive it out of sight",
-      "version": "0.2.0",
-      "author": { "name": "Michael Dobekidis", "email": "djmid71@gmail.com" },
+      "displayName": "Past Sessions",
+      "description": "A side pane listing this project's past Claude Code sessions: search them, read what each one was about, resume it, pin it to the top, or archive it out of sight",
+      "version": "0.3.0",
+      "author": { "name": "Michael Dobekidis", "email": "djmid71@gmail.com", "url": "https://github.com/netgfx" },
       "homepage": "https://github.com/netgfx/past-sessions-mod",
       "repository": "https://github.com/netgfx/past-sessions-mod",
       "license": "MIT",
       "keywords": ["mod", "sessions", "resume", "history", "search", "pane"],
       "category": "productivity"
     }
-  ]
+  ],
+  "renames": {
+    "past-sessions": "powermods-past-sessions"
+  }
 }
