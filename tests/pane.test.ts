@@ -38,9 +38,13 @@ function fixture(os: 'windows' | 'posix') {
   return { home, cwd, dir, files }
 }
 
-function stubAll(on: any, os: 'windows' | 'posix', seen: { commands: any[]; reads: string[] }) {
+type Extra = { store?: Record<string, unknown>; oldStore?: Record<string, unknown>; big?: string }
+
+function stubAll(on: any, os: 'windows' | 'posix', seen: { commands: any[]; reads: string[] }, extra: Extra = {}) {
   const f = fixture(os)
-  const store = new Map<string, unknown>()
+  // one transcript over the 4 MiB single-read limit, read only in parts
+  if (extra.big) f.files.set(idOf(1), { text: extra.big, mtimeMs: NOW - 3600_000 })
+  const store = new Map<string, unknown>(Object.entries(extra.store ?? {}))
   on('store.get', ($: any, e: any) => ({ value: store.get(e.key) }))
   on('store.set', ($: any, e: any) => (store.set(e.key, e.value), { value: undefined }))
   on('store.delete', ($: any, e: any) => (store.delete(e.key), { value: undefined }))
@@ -53,19 +57,35 @@ function stubAll(on: any, os: 'windows' | 'posix', seen: { commands: any[]; read
   on('session.root', () => ({ value: f.cwd }))
   on('session.cwd', () => ({ value: f.cwd }))
   on('session.start', () => ({ cwd: f.cwd }))
-  // the kit hands stubs absolute host paths, so compare the tail only
+  // The kit hands stubs absolute host paths: on Windows a POSIX path gets a drive letter,
+  // and elsewhere a C:\ path is resolved against the working directory
+  // (/<cwd>/C:\Users\...). So compare the tail only, which works for both fixtures on
+  // every host.
   const norm = (p: string) => p.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
-  on('fs.exists', ($: any, e: any) => ({ value: norm(e.path) === norm(f.dir) }))
-  on('fs.list', ($: any, e: any) => ({
-    value: [
-      { name: 'memory', kind: 'directory', size: 0, mtimeMs: 0, isLink: false },
-      ...[...f.files].map(([id, v]) => ({ name: id + '.jsonl', kind: 'file', size: v.text.length, mtimeMs: v.mtimeMs, isLink: false })),
-    ],
-  }))
+  const isUnder = (path: string, dir: string) => norm(path).endsWith(norm(dir))
+  on('fs.exists', ($: any, e: any) => ({ value: isUnder(e.path, f.dir) }))
+  on('fs.list', ($: any, e: any) => {
+    if (isUnder(e.path, [f.home, '.claude', 'plugins', 'store'].join(os === 'windows' ? '\\' : '/'))) {
+      return { value: extra.oldStore ? [
+        { name: 'past-sessions_past-sessions-mod-63ee6787128f.json', kind: 'file', size: 2, mtimeMs: 0, isLink: false },
+        { name: 'other-mod_x-111111111111.json', kind: 'file', size: 2, mtimeMs: 0, isLink: false },
+      ] : [] }
+    }
+    return {
+      value: [
+        { name: 'memory', kind: 'directory', size: 0, mtimeMs: 0, isLink: false },
+        ...[...f.files].map(([id, v]) => ({ name: id + '.jsonl', kind: 'file', size: v.text.length, mtimeMs: v.mtimeMs, isLink: false })),
+      ],
+    }
+  })
   on('fs.read', ($: any, e: any) => {
-    seen.reads.push(e.path)
+    seen.reads.push(e.path + (e.offset !== undefined ? '@' + e.offset + '+' + e.length : ''))
+    if (norm(e.path).endsWith('/plugins/store/past-sessions_past-sessions-mod-63ee6787128f.json')) return { value: JSON.stringify(extra.oldStore) }
     const id = /([0-9a-f-]{36})\.jsonl$/.exec(e.path)![1]
-    return { value: f.files.get(id)!.text }
+    const text = f.files.get(id)!.text
+    // the mod reads a transcript over 4 MiB only in parts
+    if (text.length > 4 * 1024 * 1024 - 1024 && e.offset === undefined) return { deny: 'over the 4 MiB limit' }
+    return { value: e.offset !== undefined ? text.slice(e.offset, e.offset + e.length) : text }
   })
   on('ui.panes', () => ({ value: [] }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
@@ -82,6 +102,9 @@ function stubAll(on: any, os: 'windows' | 'posix', seen: { commands: any[]; read
   on('ui.render', () => ({ type: 'Text', props: {}, children: ['drawn by Claude Code'] }))
   return { f, clock, store }
 }
+
+// Every pane test runs with both fixtures, so coverage is the same on every host
+const OSES = ['windows', 'posix'] as const
 
 // The mod reads one transcript per clock tick
 async function settle(clock: any) {
@@ -124,128 +147,229 @@ for (const os of ['windows', 'posix'] as const) {
   })
 }
 
-test('collapsed, only the transcripts it shows are read', async ($, on) => {
-  const seen = { commands: [] as any[], reads: [] as string[] }
-  const { f, clock } = stubAll(on, 'windows', seen)
-  await start($, clock, f.cwd)
-  // 9 is the empty one (newest), then 1..5
-  expect(seen.reads.length).toBe(6)
-})
+for (const os of OSES) {
+  test('collapsed, only the transcripts it shows are read (' + os + ')', async ($, on) => {
+    const seen = { commands: [] as any[], reads: [] as string[] }
+    const { f, clock } = stubAll(on, os, seen)
+    await start($, clock, f.cwd)
+    // 9 is the empty one (newest), then 1..5
+    expect(seen.reads.length).toBe(6)
+  })
+}
 
-test('select shows the task, pin moves it on top, archive hides it, resume runs /resume', async ($, on) => {
-  const seen = { commands: [] as any[], reads: [] as string[] }
-  const { f, clock } = stubAll(on, 'windows', seen)
-  await start($, clock, f.cwd)
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' } as any)
+for (const os of OSES) {
+  test('select shows the task, pin moves it on top, archive hides it, resume runs /resume (' + os + ')', async ($, on) => {
+    const seen = { commands: [] as any[], reads: [] as string[] }
+    const { f, clock } = stubAll(on, os, seen)
+    await start($, clock, f.cwd)
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' } as any)
 
-  await ui.press({ key: 'row-' + idOf(4) })
-  expect(await ui.find({ type: 'Text', text: 'do task 4' })).toBeDefined()
+    await ui.press({ key: 'row-' + idOf(4) })
+    expect(await ui.find({ type: 'Text', text: 'do task 4' })).toBeDefined()
 
-  await ui.press({ key: 'pin' })
-  await settle(clock)
-  expect(await ui.find({ type: 'Text', text: 'Pinned' })).toBeDefined()
-  // Task 4 is now pinned, so a sixth recent one shows
-  expect(await ui.find({ type: 'Button', text: /Task 6$/ })).toBeDefined()
+    await ui.press({ key: 'pin' })
+    await settle(clock)
+    expect(await ui.find({ type: 'Text', text: 'Pinned' })).toBeDefined()
+    // Task 4 is now pinned, so a sixth recent one shows
+    expect(await ui.find({ type: 'Button', text: /Task 6$/ })).toBeDefined()
 
-  await ui.press({ key: 'resume' })
-  expect(seen.commands.at(-1)).toEqual({ command: 'resume', args: idOf(4) })
+    await ui.press({ key: 'resume' })
+    expect(seen.commands.at(-1)).toEqual({ command: 'resume', args: idOf(4) })
 
-  await ui.press({ key: 'archive' })
-  expect(await ui.find({ type: 'Button', text: /Task 4$/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: 'Pinned' })).toBeUndefined()
-  expect(await ui.find({ type: 'Button', key: 'archived', text: 'Archived (1)' })).toBeDefined()
+    await ui.press({ key: 'archive' })
+    expect(await ui.find({ type: 'Button', text: /Task 4$/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: 'Pinned' })).toBeUndefined()
+    expect(await ui.find({ type: 'Button', key: 'archived', text: 'Archived (1)' })).toBeDefined()
 
-  await ui.press({ key: 'archived' })
-  await settle(clock)
-  expect(await ui.find({ type: 'Button', text: /Task 4$/ })).toBeDefined()
-  await ui.unmount()
-})
+    await ui.press({ key: 'archived' })
+    await settle(clock)
+    expect(await ui.find({ type: 'Button', text: /Task 4$/ })).toBeDefined()
+    await ui.unmount()
+  })
+}
 
-test('pins and archives survive a reload through $.store', async ($, on) => {
-  const seen = { commands: [] as any[], reads: [] as string[] }
-  const { f, clock, store } = stubAll(on, 'posix', seen)
-  await start($, clock, f.cwd)
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' } as any)
-  // 8 is not shown collapsed; expand first
-  await ui.press({ key: 'more' })
-  await settle(clock)
-  await ui.press({ key: 'row-' + idOf(8) })
-  await ui.press({ key: 'pin' })
-  await ui.press({ key: 'less' })
-  expect(await ui.find({ type: 'Button', text: /Task 8$/ })).toBeDefined()
-  expect(store.get('pin:' + idOf(8))).toBe(true)
-  await ui.unmount()
-})
+for (const os of OSES) {
+  test('pins and archives survive a reload through $.store (' + os + ')', async ($, on) => {
+    const seen = { commands: [] as any[], reads: [] as string[] }
+    const { f, clock, store } = stubAll(on, os, seen)
+    await start($, clock, f.cwd)
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' } as any)
+    // 8 is not shown collapsed; expand first
+    await ui.press({ key: 'more' })
+    await settle(clock)
+    await ui.press({ key: 'row-' + idOf(8) })
+    await ui.press({ key: 'pin' })
+    await ui.press({ key: 'less' })
+    expect(await ui.find({ type: 'Button', text: /Task 8$/ })).toBeDefined()
+    expect(store.get('pin:' + idOf(8))).toBe(true)
+    await ui.unmount()
+  })
+}
 
-test('titles are drawn in Claude orange; the selected one opens into a card', async ($, on) => {
-  const seen = { commands: [] as any[], reads: [] as string[] }
-  const { f, clock } = stubAll(on, 'windows', seen)
-  await start($, clock, f.cwd)
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' } as any)
+for (const os of OSES) {
+  test('titles are drawn in Claude orange; the selected one opens into a card (' + os + ')', async ($, on) => {
+    const seen = { commands: [] as any[], reads: [] as string[] }
+    const { f, clock } = stubAll(on, os, seen)
+    await start($, clock, f.cwd)
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' } as any)
 
-  const title = await ui.find({ type: 'Text', text: /Task 2$/ })
-  expect(title?.props.color).toBe('claude')
-  // focused with nothing open, the pane says how to get around
-  expect(await ui.find({ type: 'Text', text: /Esc back to prompt/ })).toBeDefined()
+    const title = await ui.find({ type: 'Text', text: /Task 2$/ })
+    expect(title?.props.color).toBe('claude')
+    // focused with nothing open, the pane says how to get around
+    expect(await ui.find({ type: 'Text', text: /Esc back to prompt/ })).toBeDefined()
 
-  await ui.press({ key: 'row-' + idOf(2) })
-  const card = await ui.find({ key: 'card-' + idOf(2) })
-  expect(card?.props.borderStyle).toBe('round')
-  expect(await ui.find({ type: 'Text', text: /^Started Oct 20, \d\d:\d\d · last active 2h ago$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /Esc back to prompt/ })).toBeUndefined()
-  // the other rows stay outside it
-  expect(await ui.find({ key: 'card-' + idOf(1) })).toBeUndefined()
-  await ui.unmount()
-})
+    await ui.press({ key: 'row-' + idOf(2) })
+    const card = await ui.find({ key: 'card-' + idOf(2) })
+    expect(card?.props.borderStyle).toBe('round')
+    expect(await ui.find({ type: 'Text', text: /^Started Oct 20, \d\d:\d\d · last active 2h ago$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Esc back to prompt/ })).toBeUndefined()
+    // the other rows stay outside it
+    expect(await ui.find({ key: 'card-' + idOf(1) })).toBeUndefined()
+    await ui.unmount()
+  })
+}
 
-test('search reads every transcript, shows each match, Enter opens the top one', async ($, on) => {
-  const seen = { commands: [] as any[], reads: [] as string[] }
-  const { f, clock } = stubAll(on, 'posix', seen)
-  await start($, clock, f.cwd)
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' } as any)
+for (const os of OSES) {
+  test('search reads every transcript, shows each match, Enter opens the top one (' + os + ')', async ($, on) => {
+    const seen = { commands: [] as any[], reads: [] as string[] }
+    const { f, clock } = stubAll(on, os, seen)
+    await start($, clock, f.cwd)
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' } as any)
 
-  // archive 3 first: a search still finds it
-  await ui.press({ key: 'row-' + idOf(3) })
-  await ui.press({ key: 'archive' })
+    // archive 3 first: a search still finds it
+    await ui.press({ key: 'row-' + idOf(3) })
+    await ui.press({ key: 'archive' })
 
-  await ui.press({ key: 'search-open' })
-  expect(await ui.find({ type: 'Input', key: 'search' })).toBeDefined()
-  await ui.input({ key: 'search', text: 'task 7', kind: 'change' })
-  await settle(clock)
-  // 6..8 were never read collapsed; the search reads them
-  expect(seen.reads.some((p) => p.includes(idOf(7)))).toBe(true)
-  expect(await ui.find({ type: 'Button', text: /Task 7$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Button', text: /Task 1$/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /· 1 match$/ })).toBeDefined()
+    await ui.press({ key: 'search-open' })
+    expect(await ui.find({ type: 'Input', key: 'search' })).toBeDefined()
+    await ui.input({ key: 'search', text: 'task 7', kind: 'change' })
+    await settle(clock)
+    // 6..8 were never read collapsed; the search reads them
+    expect(seen.reads.some((p) => p.includes(idOf(7)))).toBe(true)
+    expect(await ui.find({ type: 'Button', text: /Task 7$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Button', text: /Task 1$/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /· 1 match$/ })).toBeDefined()
 
-  await ui.input({ key: 'search', text: 'do task 3', kind: 'change' })
-  expect(await ui.find({ type: 'Text', text: 'Archived' })).toBeDefined()
-  expect(await ui.find({ type: 'Button', text: /Task 3$/ })).toBeDefined()
+    await ui.input({ key: 'search', text: 'do task 3', kind: 'change' })
+    expect(await ui.find({ type: 'Text', text: 'Archived' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', text: /Task 3$/ })).toBeDefined()
 
-  await ui.input({ key: 'search', text: 'nothing like it', kind: 'change' })
-  expect(await ui.find({ type: 'Text', text: /No sessions match "nothing like it"/ })).toBeDefined()
+    await ui.input({ key: 'search', text: 'nothing like it', kind: 'change' })
+    expect(await ui.find({ type: 'Text', text: /No sessions match "nothing like it"/ })).toBeDefined()
 
-  await ui.input({ key: 'search', text: 'task 8' })
-  expect(await ui.find({ key: 'card-' + idOf(8) })).toBeDefined()
-  await ui.press({ key: 'resume' })
-  expect(seen.commands.at(-1)).toEqual({ command: 'resume', args: idOf(8) })
+    await ui.input({ key: 'search', text: 'task 8' })
+    expect(await ui.find({ key: 'card-' + idOf(8) })).toBeDefined()
+    await ui.press({ key: 'resume' })
+    expect(seen.commands.at(-1)).toEqual({ command: 'resume', args: idOf(8) })
 
-  await ui.press({ key: 'search-clear' })
-  expect(await ui.find({ type: 'Input', key: 'search' })).toBeUndefined()
-  expect(await ui.find({ type: 'Button', text: /Task 1$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Button', key: 'more' })).toBeDefined()
-  await ui.unmount()
-})
+    await ui.press({ key: 'search-clear' })
+    expect(await ui.find({ type: 'Input', key: 'search' })).toBeUndefined()
+    expect(await ui.find({ type: 'Button', text: /Task 1$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'more' })).toBeDefined()
+    await ui.unmount()
+  })
+}
 
-test('/past-sessions search <text> opens the pane already searching', async ($, on) => {
-  const seen = { commands: [] as any[], reads: [] as string[] }
-  const { f, clock } = stubAll(on, 'windows', seen)
-  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: f.cwd })
-  await $.command.run({ command: 'past-sessions', args: 'search Task 6' })
-  await settle(clock)
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' } as any)
-  expect((await ui.find({ type: 'Input', key: 'search' }))?.props.value).toBe('Task 6')
-  expect(await ui.find({ type: 'Button', text: /Task 6$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Button', text: /Task 5$/ })).toBeUndefined()
-  await ui.unmount()
-})
+for (const os of OSES) {
+  test('/past-sessions search <text> opens the pane already searching (' + os + ')', async ($, on) => {
+    const seen = { commands: [] as any[], reads: [] as string[] }
+    const { f, clock } = stubAll(on, os, seen)
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: f.cwd })
+    await $.command.run({ command: 'past-sessions', args: 'search Task 6' })
+    await settle(clock)
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' } as any)
+    expect((await ui.find({ type: 'Input', key: 'search' }))?.props.value).toBe('Task 6')
+    expect(await ui.find({ type: 'Button', text: /Task 6$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Button', text: /Task 5$/ })).toBeUndefined()
+    await ui.unmount()
+  })
+}
+
+// ---- Nothing read from a transcript is stored ------------------------------------
+
+for (const os of OSES) {
+  test('summaries stay in memory: no title or prompt text goes into $.store (' + os + ')', async ($, on) => {
+    const seen = { commands: [] as any[], reads: [] as string[] }
+    const { f, clock, store } = stubAll(on, os, seen, {
+      // left by an earlier version: dropped on start
+      store: { ['summary:' + idOf(2)]: { title: 'Task 2', firstPrompt: 'do task 2', lastPrompt: 'do task 2' } },
+    })
+    await start($, clock, f.cwd)
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' } as any)
+    await ui.press({ key: 'more' })
+    await settle(clock)
+    await ui.press({ key: 'row-' + idOf(3) })
+    await ui.press({ key: 'pin' })
+    expect(await ui.find({ type: 'Text', text: 'do task 3' })).toBeDefined()
+    await ui.unmount()
+    const keys = [...store.keys()]
+    expect(keys.some((k) => k.startsWith('summary:'))).toBe(false)
+    // only marks without text: pins, archives and the one-time copy marker
+    for (const k of keys) expect(k).toMatch(/^(pin|archive):[0-9a-f-]{36}$|^migrated:past-sessions$/)
+    const values = JSON.stringify([...store.values()])
+    for (let n = 1; n <= 8; n++) expect(values).not.toContain('task ' + n)
+  })
+}
+
+// ---- Transcripts over 4 MiB are read in parts, with no program started -------------
+
+for (const os of OSES) {
+  test('a transcript over 4 MiB is summarized from its first and last megabyte (' + os + ')', async ($, on) => {
+    const filler = JSON.stringify({ type: 'progress', data: 'x'.repeat(2000) })
+    const rows = [
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'start the big job' }, timestamp: '2026-10-20T09:00:00.000Z' }),
+      ...Array.from({ length: 2600 }, () => filler),
+      JSON.stringify({ type: 'ai-title', aiTitle: 'Big job' }),
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'wrap it up' }, timestamp: '2026-10-20T12:00:00.000Z' }),
+    ]
+    const big = rows.join('\n')
+    expect(big.length).toBeGreaterThan(4 * 1024 * 1024)
+    const seen = { commands: [] as any[], reads: [] as string[] }
+    const { f, clock } = stubAll(on, os, seen, { big })
+    let processes = 0
+    on('process.run', () => {
+      processes += 1
+      return { value: { exitCode: 0, stdout: '', stderr: '' } }
+    })
+    await start($, clock, f.cwd)
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' } as any)
+    expect(await ui.find({ type: 'Button', text: /Big job$/ })).toBeDefined()
+    await ui.press({ key: 'row-' + idOf(1) })
+    expect(await ui.find({ type: 'Text', text: 'start the big job' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'wrap it up' })).toBeDefined()
+    await ui.unmount()
+    const parts = seen.reads.filter((r) => r.includes(idOf(1)))
+    expect(parts.length).toBe(2)
+    expect(parts[0]).toMatch(/@0\+1048576$/)
+    expect(parts[1]).toMatch(new RegExp('@' + (big.length - 1048576) + '\\+1048576$'))
+    expect(processes).toBe(0)
+  })
+}
+
+// ---- Renamed from past-sessions ------------------------------------------------
+
+for (const os of OSES) {
+  test('pins and archive marks are copied once from the past-sessions store; summaries are not (' + os + ')', async ($, on) => {
+    const seen = { commands: [] as any[], reads: [] as string[] }
+    const { f, clock, store } = stubAll(on, os, seen, {
+      oldStore: {
+        ['pin:' + idOf(7)]: true,
+        ['archive:' + idOf(2)]: true,
+        ['summary:' + idOf(7)]: { title: 'Task 7', firstPrompt: 'do task 7' },
+        'pin:not-a-session': true,
+      },
+    })
+    await start($, clock, f.cwd)
+    expect(store.get('pin:' + idOf(7))).toBe(true)
+    expect(store.get('archive:' + idOf(2))).toBe(true)
+    expect(store.has('summary:' + idOf(7))).toBe(false)
+    expect(store.has('pin:not-a-session')).toBe(false)
+    expect(store.get('migrated:past-sessions')).toBe(true)
+    // only the old plugin's own store file is read from the store folder
+    expect(seen.reads.filter((r) => /plugins[\\/]store/.test(r)).length).toBe(1)
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' } as any)
+    expect(await ui.find({ type: 'Text', text: 'Pinned' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'archived', text: 'Archived (1)' })).toBeDefined()
+    await ui.unmount()
+  })
+}
