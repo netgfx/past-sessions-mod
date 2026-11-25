@@ -95,6 +95,19 @@ The pane opens on its own when a session starts, but only if it can dock beside 
 
 ## Data, network and permissions
 
+In short, for reviewers (each point is detailed below):
+
+- **Slash commands it runs:** `/resume <session id>`, with `$.command.run`, only when you press **Resume** on a session in the pane (or Enter on its Resume button). It switches this window to that past session, as typing `/resume <session id>` would. It runs no other command.
+- **Programs it runs:** none. **Files it writes:** none. **Hosts it contacts:** none. **What it sends:** nothing; what it reads from transcripts stays in memory and in the pane.
+- **Prompts it submits, tools it calls, permission decisions, environment variables / config it sets:** none.
+- **Hooks:**
+  - `session.start`: copies pin and archive marks from the old name once, deletes old cached summaries from its own store, registers `/past-sessions`, and starts a 60-second re-scan while the pane is open. Changes nothing in the session.
+  - `classic.SessionStart` (after `/clear`, `/resume` or `/branch`): notes the new session id so the session you just left joins the list. Changes nothing.
+  - `command.run` for `/past-sessions`: answers its own command (open, close, refresh, search).
+  - `ui.close`: notes that its own pane closed. Changes nothing.
+  - `ui.render` on the band above the prompt: returns Claude Code's own drawing unchanged; it only uses the event to open the pane on start when it can dock beside the transcript (`auto_open`).
+  - `ui.render` on its pane: draws the session list.
+
 **What it reads.** Your own Claude Code transcripts for the current project: `~/.claude/projects/<project>/*.jsonl` (on Windows `%USERPROFILE%\.claude\projects\<project>\*.jsonl`), where `<project>` is the folder Claude Code names after the session's working directory. If `CLAUDE_CONFIG_DIR` is set, it reads under that folder instead. The home folder comes from `USERPROFILE` or `HOME`. It reads only transcripts of this project, never the session you're in, and only the ones it has to show: when the list is collapsed, the newest few and your pinned ones; when you search, all of them. Once, after the rename, it also reads files named `past-sessions_*.json` in Claude Code's plugin store folder, to copy your pins and archive marks.
 
 **What it does with what it reads.** It draws each session's title, first and last prompt, dates, prompt count, git branch and size in the pane, for you only. Summaries are kept in memory for the session and never written to disk, to `$.store`, or anywhere else, and never sent to a model.

@@ -1,7 +1,7 @@
 {
   "name": "powermods-past-sessions",
   "displayName": "Past Sessions",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "A side pane listing this project's past Claude Code sessions: search them, read what each one was about, resume it, pin it to the top, or archive it out of sight",
   "author": { "name": "Michael Dobekidis", "email": "djmid71@gmail.com", "url": "https://github.com/netgfx" },
   "homepage": "https://github.com/netgfx/past-sessions-mod",
