@@ -77,7 +77,7 @@ export function register(on, opts) {
     ui = { ...ui, selected: null, status: '', statusIsError: false }
     if (paneOpen) void refresh($)
     return next(e)
-  }).catch(failOpen)
+  }).catch(($, e, next) => next(e)) // fail open: the hook guards nothing
 
   on('command.run', { command: 'past-sessions' }, async ($, e) => {
     const raw = String(e.args ?? '').trim()
@@ -109,7 +109,7 @@ export function register(on, opts) {
   on('ui.close', async ($, e, next) => {
     if (e.id === PANE) paneOpen = false
     return next(e)
-  }).catch(failOpen)
+  }).catch(($, e, next) => next(e)) // fail open: the hook guards nothing
 
   // Opens the pane unasked only once a drawing says it would dock beside the
   // transcript; above the prompt it would push the conversation up
@@ -394,12 +394,6 @@ async function readHeadTail($, s) {
     $.ui.log('past-sessions: could not read the start and end of ' + s.path + ': ' + err.message, { to: 'debug' })
     return null
   }
-}
-
-// A hook that throws or times out leaves the event to Claude Code: none of this
-// mod's hooks guards anything
-function failOpen($, e, next) {
-  return next(e)
 }
 
 // Versions before 0.3.0 cached each session's title and first and last prompt in
